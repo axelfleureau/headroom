@@ -102,6 +102,9 @@ class ProxyConfig:
     gemini_api_url: str | None = None  # Custom Gemini API URL override
     cloudcode_api_url: str | None = None  # Custom Cloud Code Assist API URL override
     vertex_api_url: str | None = None  # Custom Vertex AI regional API URL override
+    minimax_api_url: str | None = None  # Custom MiniMax API URL override
+    minimax_api_key: str | None = None  # MiniMax API key (injected as x-api-key header)
+    minimax_session_token: str | None = None  # Mavis Code session JWT (replaces Authorization when routing to agent.minimax.io)
 
     # Backend: "anthropic" (direct API), "litellm-*" (via LiteLLM), or "anyllm" (via any-llm)
     backend: str = "anthropic"

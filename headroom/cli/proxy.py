@@ -643,8 +643,9 @@ def dashboard(port: int, no_open: bool) -> None:
     default="anthropic",
     envvar="HEADROOM_BACKEND",
     help=(
-        "API backend: 'anthropic' (direct), 'bedrock' (AWS), 'openrouter' (OpenRouter), "
-        "'anyllm' (any-llm), or 'litellm-<provider>' (e.g., litellm-vertex). "
+        "API backend: 'anthropic' (direct), 'minimax' (MiniMax Anthropic-compatible), "
+        "'bedrock' (AWS), 'openrouter' (OpenRouter), 'anyllm' (any-llm), "
+        "or 'litellm-<provider>' (e.g., litellm-vertex). "
         "Env: HEADROOM_BACKEND."
     ),
 )
@@ -681,6 +682,24 @@ def dashboard(port: int, no_open: bool) -> None:
     "--vertex-api-url",
     default=None,
     help=("Custom Vertex AI regional API URL for publisher endpoints (env: VERTEX_TARGET_API_URL)"),
+)
+@click.option(
+    "--minimax-api-url",
+    default=None,
+    help=(
+        "Custom MiniMax API URL. Defaults to https://api.minimaxi.com/anthropic "
+        "(env: MINIMAX_TARGET_API_URL). Use with --backend minimax."
+    ),
+)
+@click.option(
+    "--minimax-api-key",
+    default=None,
+    help=(
+        "MiniMax API key (sk-cp-...). Required for --backend minimax to inject "
+        "x-api-key header for MiniMax Anthropic-compatible API. "
+        "Can also be set via MINIMAX_API_KEY env var. "
+        "Get your key at: https://platform.minimaxi.com/user-center/payment/token-plan"
+    ),
 )
 @click.option(
     "--region",
@@ -806,6 +825,8 @@ def proxy(
     gemini_api_url: str | None,
     cloudcode_api_url: str | None,
     vertex_api_url: str | None,
+    minimax_api_url: str | None,
+    minimax_api_key: str | None,
     region: str,
     bedrock_region: str | None,
     bedrock_profile: str | None,
@@ -889,6 +910,7 @@ def proxy(
         gemini_api_url=gemini_api_url,
         cloudcode_api_url=cloudcode_api_url,
         vertex_api_url=vertex_api_url,
+        minimax_api_url=minimax_api_url,
         environ=os.environ,
     )
 
@@ -949,6 +971,8 @@ def proxy(
         gemini_api_url=provider_api_overrides.gemini,
         cloudcode_api_url=provider_api_overrides.cloudcode,
         vertex_api_url=provider_api_overrides.vertex,
+        minimax_api_url=provider_api_overrides.minimax,
+        minimax_api_key=minimax_api_key or os.environ.get("MINIMAX_API_KEY"),
         mode=effective_mode,
         optimize=not no_optimize,
         cache_enabled=not no_cache,
