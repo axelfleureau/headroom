@@ -231,6 +231,18 @@ if ! launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT" 2>/dev/null; then
 fi
 green "  ✓ com.headroom.$PROFILE_NAME bootstrap OK"
 
+# 7b. Installa anche auto-refresh token (LaunchAgent separato, ogni 6h)
+REFRESHER_PLIST="$LAUNCH_AGENTS/com.headroom.minimax-token-refresher.plist"
+REFRESHER_SCRIPT="$HOME/.mavis/bin/minimax-token-refresher.sh"
+if [ -f "$REFRESHER_SCRIPT" ]; then
+  if ! launchctl print "gui/$(id -u)/com.headroom.minimax-token-refresher" >/dev/null 2>&1; then
+    launchctl bootstrap "gui/$(id -u)" "$REFRESHER_PLIST" 2>/dev/null || true
+  fi
+  if launchctl print "gui/$(id -u)/com.headroom.minimax-token-refresher" >/dev/null 2>&1; then
+    green "  ✓ auto-refresh token ogni 6h attivo (com.headroom.minimax-token-refresher)"
+  fi
+fi
+
 # Aspetta health (retry 15s perché headroom è lento)
 HEALTH=""
 for i in $(seq 1 15); do

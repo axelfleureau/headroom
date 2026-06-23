@@ -11,6 +11,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.27.0-minimax.4] - 2026-06-23
+
+### Added — production hardening
+
+- **`minimax-token-refresher.sh` + LaunchAgent dedicato** (`com.headroom.minimax-token-refresher`)
+  che gira ogni 6h. Rilegge il JWT dal localStorage Mavis Code, aggiorna il
+  keychain se cambiato, kickstart headroom-MiniMax. Sicuro: log solo
+  `unchanged/updated` + exp timestamp, mai il token in chiaro. Idempotente.
+- **Test E2E verificati end-to-end** con token reale:
+  - M2.7-highspeed via gateway diretto + header Token → 200 OK
+  - M2.7-highspeed via headroom-MiniMax 8788 + Token → 200 OK
+  - M3 con `thinking: { type: "adaptive" }` → thinking block + text block OK
+  - M3 con tool_use → 200 OK, tool chiamato correttamente
+  - Streaming SSE: message_start → content_block_delta → message_stop OK
+  - 20 chiamate streaming seriali: 20/20 OK, ~1.1s/call
+  - Fallback wrapper: proxy up→8788, proxy down→diretto OK
+
+### Changed
+
+- `headroom-minimax-enable.sh` ora installa anche il LaunchAgent
+  `com.headroom.minimax-token-refresher` automaticamente dopo aver verificato
+  end-to-end il proxy.
+
+---
+
 ## [0.27.0-minimax.3] - 2026-06-23
 
 ### Changed — major architectural simplification

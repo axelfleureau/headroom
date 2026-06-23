@@ -225,3 +225,27 @@ rimossa perché Mavis Code già gestisce l'auth lato client.
 ## License
 
 Apache-2.0, same as upstream.
+---
+
+## Auto-refresh del token (opzionale ma raccomandato)
+
+Il token JWT scade ogni ~30 giorni. Per refresh automatico, dopo aver eseguito
+`headroom-minimax-enable.sh`, viene installato un secondo LaunchAgent
+(`com.headroom.minimax-token-refresher`) che gira ogni 6 ore:
+
+```bash
+# Dopo enable, verifica:
+launchctl print gui/$(id -u)/com.headroom.minimax-token-refresher
+# → state=running
+
+# Log:
+tail -f ~/.headroom/logs/token-refresher.log
+```
+
+Comportamento:
+- **token invariato** → log `unchanged (exp ...)`, nessuna azione
+- **token cambiato** → log `updated (exp ...)`, aggiorna keychain + kickstart
+- **Mavis Code non loggato** → log warning, keychain NON modificato
+
+Sicuro: mai loggato in chiaro. Idempotente: puoi rieseguire a mano quando vuoi.
+
