@@ -11,6 +11,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import Response
 
+from headroom.proxy.dashboard_minimax import get_minimax_dashboard_html
 from headroom.proxy.handlers.minimax import MiniMaxHandlerMixin
 from headroom.proxy.handlers.openai import _resolve_codex_routing_headers
 
@@ -479,6 +480,13 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
             action,
             f"vertex:{publisher}",
         )
+
+    @app.get("/dashboard/minimax", response_class=HTMLResponse)
+    async def minimax_dashboard():
+        """MiniMax-specific dashboard: aggregates per-model and per-feature
+        traffic so operators get a clean view of MiniMax-only usage
+        distinct from the mixed-provider ``/dashboard`` page."""
+        return get_minimax_dashboard_html()
 
     @app.post("/v1/messages")
     async def anthropic_messages(request: Request):
