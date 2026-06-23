@@ -203,3 +203,58 @@ class TestLiveMinimaxE2E:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
         assert data["model"] == "MiniMax-M2.7-highspeed"
+
+    def test_cache_alignment_engages_on_burst(self) -> None:
+        """Burst of 5 calls with the same system prompt should cause the
+        proxy to write the prompt to the upstream cache on call 1, then
+        read it back (cache_creation_input_tokens=0, cache_read_input_tokens>0)
+        on calls 2-5.
+
+        This is the most important savings lever for MiniMax M3, which
+        bills at the same rate for cached vs uncached input but skips
+        prefill on cache hits — cutting TTFT and freeing the gateway
+        for other tenants.
+        """
+        import urllib.request
+        import json
+
+        system = "You are a helpful assistant. " + ("Be concise. " * 50)
+        results = []
+        for i in range(5):
+            req = urllib.request.Request(
+                "http://127.0.0.1:8787/v1/messages",
+                data=json.dumps(
+                    {
+                        "model": "MiniMax-M3",
+                        "max_tokens": 20,
+                        "system": system,
+                        "messages": [
+                            {"role": "user", "content": f"Question {i}: just say 'ok {i}'."}
+                        ],
+                    }
+                ).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": "dummy",
+                    "anthropic-version": "2023-06-01",
+                    "User-Agent": "MiniMax Code/3.0.43",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            usage = data.get("usage", {})
+            results.append(
+                {
+                    "input": usage.get("input_tokens", 0),
+                    "cache_read": usage.get("cache_read_input_tokens", 0),
+                    "cache_write": usage.get("cache_creation_input_tokens", 0),
+                }
+            )
+
+        # At least one of calls 2-5 should have non-zero cache_read
+        # (the cache_alignment hook does its job).
+        cached_calls = [r for r in results[1:] if r["cache_read"] > 0]
+        assert cached_calls, (
+            f"no cache_read on calls 2-5 — cache alignment is not engaging. "
+            f"results={results}"
+        )

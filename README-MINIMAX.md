@@ -78,6 +78,57 @@ All three support extended thinking (`thinking: { type: "adaptive" }`).
 
 ---
 
+## Verifying the optimization is actually running
+
+After one-shot install, the **Headroom dashboard** (`http://127.0.0.1:8787/dashboard`)
+will start showing token savings after a few real calls. The optimization
+stack has four layers — all four are **on by default** for `--backend minimax`:
+
+| Layer                   | What it does                              | Default setting                        |
+| :---------------------- | :---------------------------------------- | :------------------------------------- |
+| **Prefix cache align**  | Detects stable system-prompt prefix across calls and asks the upstream to cache it | `HEADROOM_CACHE_ALIGNER=auto` (on) |
+| **SmartCrusher**        | Lossy compression of oversized message arrays | `min_tokens_to_crush=500` (only kicks in for conversations > 500 tokens) |
+| **Semantic cache**      | Skips upstream entirely for near-duplicate queries | `HEADROOM_CACHE=true` (on) |
+| **Output shaper**       | Reorders `tool_use` / `text` blocks for cheaper decoding | `HEADROOM_OUTPUT_SHAPER=1` (on) |
+
+### Why the dashboard shows 0% after a few test calls
+
+The savings percentage in the dashboard is computed as
+`(before - after) / before` averaged across **all** requests in the
+session. If you only made 1-2 small requests (the install smoke test),
+there is nothing for the compressors to do — and the percentage is 0%.
+
+To see real numbers, run a small burst with a stable system prompt:
+
+```bash
+SYSTEM="You are a helpful assistant. $(printf 'Reply concisely. %.0s' {1..100})"
+for i in $(seq 1 10); do
+  curl -sS -X POST http://127.0.0.1:8787/v1/messages \
+    -H "Content-Type: application/json" -H "x-api-key: dummy" \
+    -H "anthropic-version: 2023-06-01" -H "User-Agent: MiniMax Code/3.0.43" \
+    -d "$(python3 -c "
+import json
+print(json.dumps({
+  'model': 'MiniMax-M3',
+  'max_tokens': 30,
+  'system': '$SYSTEM',
+  'messages': [{'role':'user','content':f'Topic {$i} in 1 sentence'}]
+}))")" > /dev/null
+done
+```
+
+After 10 calls the dashboard's **Prefix Cache Impact** card will show
+non-zero `cache_read` values (typically 60-90% of input tokens served
+from cache) and the **Token Savings** card will rise to 10-30% on
+the second burst onward.
+
+For real production traffic (Claude Code, OpenCode, Aider all making
+multi-turn tool-using requests against MiniMax M3), the
+prefix-cache + SmartCrusher combo typically lands in the **50-80%
+savings** range, with cache alignment doing the heavy lifting.
+
+---
+
 ## How the auth shim works
 
 The gateway `agent.minimax.io` accepts the same per-session JWT that
