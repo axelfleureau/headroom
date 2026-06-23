@@ -580,22 +580,6 @@ class HeadroomProxy(
         # provider_runtime as the source of truth for resolved upstream targets.
         HeadroomProxy.ANTHROPIC_API_URL = api_targets.anthropic
         HeadroomProxy.OPENAI_API_URL = api_targets.openai
-
-    @staticmethod
-    def _is_minimax_gateway_url(url: str) -> bool:
-        """True when `url` points at the Mavis Code gateway, not the direct
-        MiniMax Anthropic-compatible API.
-
-        Mavis Code gateway: agent.minimax.io/mavis/api/v1/llm/v1
-        Direct MiniMax API: api.minimaxi.com/anthropic
-        """
-        from urllib.parse import urlparse
-
-        try:
-            host = (urlparse(url).hostname or "").lower()
-        except ValueError:
-            return False
-        return "agent.minimax.io" in host or "minimax.io" == host
         HeadroomProxy.GEMINI_API_URL = api_targets.gemini
         HeadroomProxy.CLOUDCODE_API_URL = api_targets.cloudcode
         HeadroomProxy.VERTEX_API_URL = api_targets.vertex
@@ -1040,6 +1024,22 @@ class HeadroomProxy(
                 "memory_enabled": self.config.memory_enabled,
             },
         )
+
+    @staticmethod
+    def _is_minimax_gateway_url(url: str) -> bool:
+        """True when `url` points at the Mavis Code gateway, not the direct
+        MiniMax Anthropic-compatible API.
+
+        Mavis Code gateway: agent.minimax.io/mavis/api/v1/llm/v1
+        Direct MiniMax API: api.minimaxi.com/anthropic
+        """
+        from urllib.parse import urlparse
+
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except ValueError:
+            return False
+        return "agent.minimax.io" in host or "minimax.io" == host
 
     async def _run_compression_in_executor(
         self,
