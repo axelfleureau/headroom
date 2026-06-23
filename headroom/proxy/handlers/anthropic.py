@@ -41,6 +41,30 @@ class AnthropicHandlerMixin:
     """Mixin providing Anthropic API handler methods for HeadroomProxy."""
 
     @staticmethod
+    def _resolve_provider_name(model: str, default: str) -> str:
+        """Return the dashboard-visible provider name for a request.
+
+        The Headroom proxy originally routed everything through
+        ``provider="anthropic"`` because that was the only Anthropic-
+        format backend. With the MiniMax Mavis Code gateway shim,
+        ``MiniMax-M*`` model names should bucket as ``provider="minimax"``
+        so the dashboard's per-provider breakdown is honest.
+
+        The detection is intentionally simple — model name substring
+        — because the proxy doesn't have access to the upstream
+        provider's name (it just sees the model field). All other
+        models fall through to the supplied default.
+        """
+        if not model:
+            return default
+        m = model.lower()
+        if "minimax" in m:
+            return "minimax"
+        if m.startswith("minimax/"):
+            return "minimax"
+        return default
+
+    @staticmethod
     def _resolve_ccr_workspace(
         request: Any,
         body: Any,
@@ -826,7 +850,7 @@ class AnthropicHandlerMixin:
                     await self._record_request_outcome(
                         RequestOutcome(
                             request_id=request_id,
-                            provider=provider_name,
+                            provider=self._resolve_provider_name(model, provider_name),
                             model=model,
                             original_tokens=0,
                             optimized_tokens=0,
@@ -1962,7 +1986,7 @@ class AnthropicHandlerMixin:
                         await self._record_request_outcome(
                             RequestOutcome(
                                 request_id=request_id,
-                                provider=_backend_name,
+                                provider=self._resolve_provider_name(model, _backend_name),
                                 model=model,
                                 original_tokens=original_tokens,
                                 optimized_tokens=optimized_tokens,
@@ -2485,7 +2509,7 @@ class AnthropicHandlerMixin:
                     await self._record_request_outcome(
                         RequestOutcome(
                             request_id=request_id,
-                            provider=provider_name,
+                            provider=self._resolve_provider_name(model, provider_name),
                             model=model,
                             original_tokens=original_tokens,
                             optimized_tokens=optimized_tokens,

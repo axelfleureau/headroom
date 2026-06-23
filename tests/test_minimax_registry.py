@@ -58,6 +58,52 @@ class TestProxyConfigFields:
         assert p.supports_model("") is False
 
 
+class TestResolveProviderName:
+    """The dashboard's per-provider breakdown should bucket MiniMax
+    models as provider=minimax, not provider=anthropic. Regression
+    test for the case where a user looks at the dashboard and sees
+    their MiniMax-M3 traffic attributed to Anthropic.
+    """
+
+    def test_resolve_provider_minimax_bare(self) -> None:
+        from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
+
+        result = AnthropicHandlerMixin._resolve_provider_name("MiniMax-M3", "anthropic")
+        assert result == "minimax"
+
+    def test_resolve_provider_minimax_prefixed(self) -> None:
+        from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
+
+        result = AnthropicHandlerMixin._resolve_provider_name(
+            "minimax/MiniMax-M2.7-highspeed", "anthropic"
+        )
+        assert result == "minimax"
+
+    def test_resolve_provider_passthrough_for_anthropic(self) -> None:
+        from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
+
+        result = AnthropicHandlerMixin._resolve_provider_name(
+            "claude-sonnet-4-5", "anthropic"
+        )
+        assert result == "anthropic"
+
+    def test_resolve_provider_empty_model(self) -> None:
+        from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
+
+        result = AnthropicHandlerMixin._resolve_provider_name("", "anthropic")
+        assert result == "anthropic"
+
+    def test_resolve_provider_other_backend_default(self) -> None:
+        from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
+
+        # If the default is "openai", MiniMax model still wins.
+        result = AnthropicHandlerMixin._resolve_provider_name("MiniMax-M3", "openai")
+        assert result == "minimax"
+        # Non-MiniMax model keeps the default.
+        result = AnthropicHandlerMixin._resolve_provider_name("gpt-4o", "openai")
+        assert result == "openai"
+
+
 class TestResolveApiOverrides:
     def test_resolve_picks_up_env_var(self) -> None:
         with patch.dict(os.environ, {"MINIMAX_TARGET_API_URL": "https://custom.example/v1"}):
