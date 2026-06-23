@@ -206,10 +206,14 @@ function render(d) {
   const upstream = (d.__health && d.__health.checks && d.__health.checks.upstream && d.__health.checks.upstream.url) || "?";
   document.getElementById("upstream-pill").textContent = "upstream: " + upstream;
 
+  // MiniMax-only logs (used for output tokens + cache hit detection,
+  // since display_session doesn't track output_tokens separately).
+  const logs = (d.request_logs || []).filter(r => (r.provider || "") === "minimax");
+
   // KPIs (window-level)
   const requests = win.requests || 0;
   const totalInput = win.total_input_tokens || 0;
-  const totalOutput = win.total_output_tokens || 0;
+  const totalOutput = logs.reduce((s, r) => s + (r.output_tokens || 0), 0);
   const totalCost = win.total_input_cost_usd || 0;
   document.getElementById("kpi-cost").textContent = fmtUSD(totalCost);
   document.getElementById("kpi-requests").textContent = fmtInt(requests);
@@ -217,7 +221,6 @@ function render(d) {
   document.getElementById("kpi-tokens-out").textContent = fmtInt(totalOutput);
 
   // MiniMax-specific data: log buffer + per_model + prefix_cache
-  const logs = (d.request_logs || []).filter(r => (r.provider || "") === "minimax");
   const perModel = (d.cost && d.cost.per_model) || {};
   const cacheByProv = (d.prefix_cache && d.prefix_cache.by_provider && d.prefix_cache.by_provider.minimax) || {};
 
@@ -245,8 +248,9 @@ function render(d) {
 
   const totalReqForShare = modelRows.reduce((s, r) => s + r.requests, 0) || 1;
   document.getElementById("kpi-models").textContent = modelRows.length;
-  const cacheReadFromLogs = logs.reduce((s, r) => s + (r.cache_read_input_tokens || 0), 0);
-  document.getElementById("kpi-cache-hit").textContent = totalInput > 0 ? fmtPct(cacheReadFromLogs / totalInput) : "0%";
+  // Cache hit rate: % of recent MiniMax log entries with cache_hit=true
+  const cacheHitsFromLogs = logs.filter(r => r.cache_hit).length;
+  document.getElementById("kpi-cache-hit").textContent = logs.length > 0 ? fmtPct(cacheHitsFromLogs / logs.length) : "0%";
 
   const tbody = document.querySelector("#model-table tbody");
   if (modelRows.length === 0) {
@@ -344,39 +348,41 @@ const PRICING = {
 
 function detectFeature(logEntry) {
   // Best-effort feature detection from log fields:
-  //   - `cache_hit: true` → "cache hit"
-  //   - `transforms_applied` contains "thinking_*" → "thinking"
-  //   - `transforms_applied` contains "tool_*" → "tool_use"
+  //   - `cache_hit: true` → "cache hit" (the request was served from
+  //     headroom's response cache, not the upstream API)
   //   - otherwise → "text"
+  //
+  // Note: thinking/tool_use flags aren't reliably surfaced in
+  // `/stats > request_logs` today (only in debug payloads). When the
+  // server-side log includes them, we add detection here.
+  if (logEntry.cache_hit) return '<span class="tag" style="color:var(--accent)">cache hit</span>';
+  // Heuristic: presence of "thinking_*" in transforms indicates thinking
   const t = logEntry.transforms_applied || [];
-  const isThinking = t.some(s => s.includes("thinking") || s.includes("think_"));
-  const isTool = t.some(s => s.includes("tool") || s.includes("function_call"));
-  if (isThinking) return '<span class="tag thinking">thinking</span>';
-  if (isTool) return '<span class="tag tool">tool_use</span>';
+  if (t.some(s => s.startsWith("thinking:") || s === "thinking")) {
+    return '<span class="tag thinking">thinking</span>';
+  }
+  // Heuristic for tool_use: look at the tool_count tag set elsewhere.
+  if (logEntry.tags && logEntry.tags.tool_count && logEntry.tags.tool_count !== "0") {
+    return '<span class="tag tool">tool_use</span>';
+  }
   return "text";
 }
 
 function renderFeatureBreakdown(logs) {
-  let thinking = 0, tool = 0, text = 0, cache = 0;
+  let text = 0, cache = 0;
   logs.forEach(r => {
     if (r.cache_hit) cache++;
-    const t = r.transforms_applied || [];
-    const isThinking = t.some(s => s.includes("thinking") || s.includes("think_"));
-    const isTool = t.some(s => s.includes("tool") || s.includes("function_call"));
-    if (isThinking) thinking++;
-    else if (isTool) tool++;
     else text++;
   });
-  const total = thinking + tool + text || 1;
+  const total = logs.length || 1;
   const tbody = document.querySelector("#feature-table tbody");
   if (logs.length === 0) {
     tbody.innerHTML = '<tr><td colspan="3" class="empty">no MiniMax traffic</td></tr>';
   } else {
     tbody.innerHTML = `
-      <tr><td><span class="tag thinking">thinking</span></td><td class="num">${thinking}</td><td class="num">${(thinking/total*100).toFixed(1)}%</td></tr>
-      <tr><td><span class="tag tool">tool_use</span></td><td class="num">${tool}</td><td class="num">${(tool/total*100).toFixed(1)}%</td></tr>
       <tr><td>text</td><td class="num">${text}</td><td class="num">${(text/total*100).toFixed(1)}%</td></tr>
       <tr><td><span class="tag" style="color:var(--accent)">cache hit</span></td><td class="num">${cache}</td><td class="num">${(cache/total*100).toFixed(1)}%</td></tr>
+      <tr><td colspan="3" class="small" style="padding-top:8px">thinking/tool_use detection requires per-request log enrichment (proxy.log file). Auto-refresh: 10s.</td></tr>
     `;
   }
 }
