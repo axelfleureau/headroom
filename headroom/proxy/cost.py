@@ -150,6 +150,7 @@ def build_prefix_cache_stats(
                     or (provider == "openai" and any(p in model_name for p in _openai_prefixes))
                     or (provider == "gemini" and "gemini" in model_name)
                     or (provider == "bedrock" and "claude" in model_name)
+                    or (provider == "minimax" and ("MiniMax-M" in model_name or "minimax-m" in model_name.lower()))
                 )
                 if is_match:
                     price_per_1m = cost_tracker._get_list_price(model_name)
@@ -746,6 +747,19 @@ class CostTracker:
 
     def _get_list_price(self, model: str) -> float | None:
         """Get list input price per 1M tokens for a model."""
+        # MiniMax fallback — covers the wire-format provider that isn't
+        # in the litellm registry. The MiniMaxProvider class already
+        # declares per-million-token pricing; surface it here so the
+        # cache-savings economics have a price to multiply by.
+        try:
+            from headroom.providers.minimax import MODEL_INPUT_COST
+
+            normalised = model.split("/")[-1]
+            if normalised in MODEL_INPUT_COST:
+                return MODEL_INPUT_COST[normalised]
+        except ImportError:
+            pass
+
         litellm = _get_litellm_module()
         if litellm is None:
             return None
