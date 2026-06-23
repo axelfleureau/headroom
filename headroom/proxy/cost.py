@@ -809,6 +809,7 @@ class CostTracker:
         cost_with_headroom = 0.0
         total_billed_input_tokens = 0
         total_input_tokens = 0
+        per_model_cost: dict[str, float] = {}
         for model in self._tokens_saved_by_model:
             saved = self._tokens_saved_by_model[model]
             sent = self._tokens_sent_by_model.get(model, 0)
@@ -830,6 +831,16 @@ class CostTracker:
                     billed_tokens = sent
                 cost_with_headroom += model_cost
                 total_billed_input_tokens += billed_tokens
+                # Attach cost to the per_model dict so the dashboard
+                # Per-Model table can render a $ column even when the
+                # provider has no litellm registry entry (e.g. MiniMax).
+                per_model_cost[model] = round(model_cost, 6)
+
+        # Surface per-model cost in the per_model dict (rounded to 6
+        # decimal places to match the existing token-cost display precision).
+        for model, cost in per_model_cost.items():
+            if model in per_model:
+                per_model[model]["input_cost_usd"] = cost
 
         # Compression savings: price saved tokens at the model's list input price.
         # This is simple, monotonic, and transparent — each saved token is valued
