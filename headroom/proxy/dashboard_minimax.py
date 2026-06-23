@@ -169,9 +169,15 @@ const REFRESH_MS = 10000;
 
 async function loadStats() {
   try {
-    const r = await fetch("/stats", { cache: "no-store" });
-    if (!r.ok) throw new Error("/stats " + r.status);
-    const d = await r.json();
+    const [statsRes, healthRes] = await Promise.all([
+      fetch("/stats", { cache: "no-store" }),
+      fetch("/health", { cache: "no-store" }),
+    ]);
+    if (!statsRes.ok) throw new Error("/stats " + statsRes.status);
+    const d = await statsRes.json();
+    if (healthRes.ok) {
+      d.__health = await healthRes.json();
+    }
     render(d);
     document.getElementById("last-update").textContent = "updated " + new Date().toLocaleTimeString();
     document.getElementById("live-pill").classList.add("live");
@@ -197,7 +203,7 @@ function fmtPct(n) { return (n * 100).toFixed(1) + "%"; }
 
 function render(d) {
   const win = getWindow(d);
-  const upstream = (d.checks && d.checks.upstream && d.checks.upstream.url) || "?";
+  const upstream = (d.__health && d.__health.checks && d.__health.checks.upstream && d.__health.checks.upstream.url) || "?";
   document.getElementById("upstream-pill").textContent = "upstream: " + upstream;
 
   // KPIs (window-level)
@@ -215,18 +221,18 @@ function render(d) {
   const perModel = (d.cost && d.cost.per_model) || {};
   const cacheByProv = (d.prefix_cache && d.prefix_cache.by_provider && d.prefix_cache.by_provider.minimax) || {};
 
-  // Build per-model table
+  // Build per-model table — combine per_model stats (cumulative) with log entries (recent)
   const models = new Set();
-  logs.forEach(r => r.model && models.add(r.model));
   Object.keys(perModel).forEach(m => models.add(m));
+  logs.forEach(r => r.model && models.add(r.model));
   const modelRows = [...models].map(m => {
     const p = perModel[m] || {};
     const logEntries = logs.filter(r => r.model === m);
-    const modelReqs = (p.requests || logEntries.length || 0);
-    const tokens = p.tokens_sent || 0;
-    const cost = (modelReqs * (tokens / Math.max(1, modelReqs))) * (PRICING[m] || 0) / 1e6;
-    const input = p.tokens_sent || logEntries.reduce((s, r) => s + (r.input_tokens || 0), 0);
-    const output = logEntries.reduce((s, r) => s + (r.output_tokens || 0), 0) || 0;
+    // Prefer log data (recent + has provider field) over cumulative per_model
+    const modelReqs = logEntries.length > 0 ? logEntries.length : (p.requests || 0);
+    const input = p.tokens_sent || logEntries.reduce((s, r) => s + (r.input_tokens_original || r.input_tokens || 0), 0);
+    const output = p.tokens_sent ? 0 : logEntries.reduce((s, r) => s + (r.output_tokens || 0), 0);
+    const cost = input * (PRICING[m]?.input_per_token || 0);
     return {
       model: m,
       requests: modelReqs,
@@ -239,7 +245,8 @@ function render(d) {
 
   const totalReqForShare = modelRows.reduce((s, r) => s + r.requests, 0) || 1;
   document.getElementById("kpi-models").textContent = modelRows.length;
-  document.getElementById("kpi-cache-hit").textContent = totalInput > 0 ? fmtPct((cacheByProv.cache_read_tokens || 0) / totalInput) : "0%";
+  const cacheReadFromLogs = logs.reduce((s, r) => s + (r.cache_read_input_tokens || 0), 0);
+  document.getElementById("kpi-cache-hit").textContent = totalInput > 0 ? fmtPct(cacheReadFromLogs / totalInput) : "0%";
 
   const tbody = document.querySelector("#model-table tbody");
   if (modelRows.length === 0) {
@@ -259,11 +266,8 @@ function render(d) {
     }).join("");
   }
 
-  // Feature breakdown — needs feature flags from logs (we don't have them in /stats directly,
-  // so use proxy.log as source via /api/minimax/feature-tally — but for now approximate
-  // using tokens as proxy)
-  // For accuracy, call /api/minimax/logs which parses proxy.log
-  loadFeatureBreakdown(logs);
+  // Feature breakdown: detect from transforms_applied / cache_hit fields
+  renderFeatureBreakdown(logs);
 
   // Recent requests table
   const recentTbody = document.querySelector("#recent-table tbody");
@@ -273,13 +277,14 @@ function render(d) {
   } else {
     recentTbody.innerHTML = recent.map(r => {
       const ts = r.timestamp ? new Date(r.timestamp).toLocaleTimeString() : "—";
-      const feature = (r.features && r.features.length) ? r.features.join(",") : "—";
-      const input = fmtInt(r.input_tokens || 0);
+      const feature = detectFeature(r);
+      const input = fmtInt(r.input_tokens_original || r.input_tokens || 0);
       const output = fmtInt(r.output_tokens || 0);
-      const cacheRead = fmtInt(r.cache_read_tokens || 0);
-      const cost = fmtUSD(r.input_cost_usd || 0);
-      const status = r.status || (r.failed ? "FAIL" : "OK");
-      const statusColor = status === "OK" ? "var(--good)" : "var(--bad)";
+      const cacheRead = fmtInt(r.cache_read_input_tokens || 0);
+      const modelCost = (r.input_tokens_original || 0) * (PRICING[r.model]?.input_per_token || 0);
+      const cost = fmtUSD(modelCost);
+      const status = r.failed ? "FAIL" : (r.cache_hit ? "cache" : "OK");
+      const statusColor = status === "FAIL" ? "var(--bad)" : (status === "cache" ? "var(--accent)" : "var(--good)");
       return `<tr>
         <td class="small">${ts}</td>
         <td><code>${r.model || "?"}</code></td>
@@ -337,17 +342,29 @@ const PRICING = {
   "MiniMax-M2":             { input_per_token: 0.2e-6, output_per_token: 1e-6 },
 };
 
-async function loadFeatureBreakdown(logs) {
-  // Feature detection: feature comes from logs only if upstream server
-  // recorded `thinking` / `tool_use` flags. Headroom's /stats doesn't
-  // expose them directly, so approximate using the request_logs entries.
-  // If we don't have feature flags, show approximate distribution from
-  // logs (which we already have).
-  let thinking = 0, tool = 0, text = 0;
+function detectFeature(logEntry) {
+  // Best-effort feature detection from log fields:
+  //   - `cache_hit: true` → "cache hit"
+  //   - `transforms_applied` contains "thinking_*" → "thinking"
+  //   - `transforms_applied` contains "tool_*" → "tool_use"
+  //   - otherwise → "text"
+  const t = logEntry.transforms_applied || [];
+  const isThinking = t.some(s => s.includes("thinking") || s.includes("think_"));
+  const isTool = t.some(s => s.includes("tool") || s.includes("function_call"));
+  if (isThinking) return '<span class="tag thinking">thinking</span>';
+  if (isTool) return '<span class="tag tool">tool_use</span>';
+  return "text";
+}
+
+function renderFeatureBreakdown(logs) {
+  let thinking = 0, tool = 0, text = 0, cache = 0;
   logs.forEach(r => {
-    const f = r.features || [];
-    if (f.includes("thinking")) thinking++;
-    else if (f.includes("tool_use")) tool++;
+    if (r.cache_hit) cache++;
+    const t = r.transforms_applied || [];
+    const isThinking = t.some(s => s.includes("thinking") || s.includes("think_"));
+    const isTool = t.some(s => s.includes("tool") || s.includes("function_call"));
+    if (isThinking) thinking++;
+    else if (isTool) tool++;
     else text++;
   });
   const total = thinking + tool + text || 1;
@@ -359,6 +376,7 @@ async function loadFeatureBreakdown(logs) {
       <tr><td><span class="tag thinking">thinking</span></td><td class="num">${thinking}</td><td class="num">${(thinking/total*100).toFixed(1)}%</td></tr>
       <tr><td><span class="tag tool">tool_use</span></td><td class="num">${tool}</td><td class="num">${(tool/total*100).toFixed(1)}%</td></tr>
       <tr><td>text</td><td class="num">${text}</td><td class="num">${(text/total*100).toFixed(1)}%</td></tr>
+      <tr><td><span class="tag" style="color:var(--accent)">cache hit</span></td><td class="num">${cache}</td><td class="num">${(cache/total*100).toFixed(1)}%</td></tr>
     `;
   }
 }
