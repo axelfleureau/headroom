@@ -9,7 +9,7 @@ from typing import Any, cast
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 
 from headroom.proxy.dashboard_minimax import get_minimax_dashboard_html
 from headroom.proxy.handlers.minimax import MiniMaxHandlerMixin
