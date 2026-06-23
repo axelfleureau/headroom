@@ -229,13 +229,15 @@ def _get_minimax_cost_per_token(model: str) -> dict[str, float] | None:
 
 def _estimate_compression_savings_usd(model: str, tokens_saved: int) -> float:
     """Estimate compression savings in USD from saved input tokens."""
-    litellm = _get_litellm_module()
-    if tokens_saved <= 0 or litellm is None:
+    if tokens_saved <= 0:
         return 0.0
 
     try:
         info = _get_minimax_cost_per_token(model) or {}
         if not info:
+            litellm = _get_litellm_module()
+            if litellm is None:
+                return 0.0
             resolved = _resolve_litellm_model(model)
             info = litellm.model_cost.get(resolved, {})
         input_cost_per_token = info.get("input_cost_per_token")
@@ -260,8 +262,7 @@ def _estimate_input_cost_usd(
     otherwise falls back to list-price input tokens.
     """
     total_input_tokens = _coerce_int(input_tokens)
-    litellm = _get_litellm_module()
-    if total_input_tokens <= 0 or litellm is None:
+    if total_input_tokens <= 0:
         return 0.0
 
     cache_read = _coerce_int(cache_read_tokens)
@@ -269,10 +270,16 @@ def _estimate_input_cost_usd(
     uncached = _coerce_int(uncached_input_tokens)
 
     try:
-        # MiniMax has no entry in litellm.model_cost; fall back to
-        # MiniMaxProvider's declared pricing.
+        # MiniMax has no entry in litellm.model_cost; use the
+        # MiniMaxProvider's declared pricing. This path doesn't require
+        # litellm, so it works on Python 3.14 where litellm is
+        # skipped (it pins requires-python<3.14).
         info = _get_minimax_cost_per_token(model) or {}
         if not info:
+            # Anthropic / OpenAI / Gemini: litellm is required.
+            litellm = _get_litellm_module()
+            if litellm is None:
+                return 0.0
             resolved = _resolve_litellm_model(model)
             info = litellm.model_cost.get(resolved, {})
         input_cost_per_token = info.get("input_cost_per_token")
