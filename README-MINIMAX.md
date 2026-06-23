@@ -43,28 +43,45 @@ The proxy auto-detects which surface you're targeting by URL.
 If you have MiniMax Code already installed and logged in:
 
 ```bash
-# 1. Save the session JWT into the macOS keychain (one-time)
-TOKEN=$(plutil -p ~/Library/Application\ Support/MiniMax\ Agent/Local\ Storage/leveldb/*.log 2>/dev/null \
-  | python3 -c "import sys, re; raw=sys.stdin.read(); m=re.search(r'\"_token\"[^a-zA-Z]+(eyJ[A-Za-z0-9._-]+)', raw); print(m.group(1) if m else '')")
-[ -n "$TOKEN" ] && security add-generic-password -s "minimax-session-token" -a "$USER" -w "$TOKEN" -U
-
-# 2. Install Headroom (this fork)
-git clone https://github.com/axelfleureau/headroom.git
-cd headroom && pip install -e .
-
-# 3. Run Headroom pointed at the MiniMax gateway
-ANTHROPIC_TARGET_API_URL="https://agent.minimax.io/mavis/api/v1/llm/v1" \
-MINIMAX_SESSION_TOKEN="$(security find-generic-password -s minimax-session-token -w)" \
-headroom proxy --port 8787 &
-
-# 4. Point Claude Code (or any Anthropic-compat client) at Headroom
-ANTHROPIC_BASE_URL=http://127.0.0.1:8787 \
-ANTHROPIC_MODEL=MiniMax-M3 claude
+git clone https://github.com/axelfleureau/headroom.git ~/headroom
+bash ~/headroom/scripts/minimax-deploy/install-minimax-headroom.sh
 ```
 
-That's it. You're now running Claude Code against MiniMax M3 through the
-full Headroom optimization stack (SmartCrusher, cache alignment, rate
-limiting, telemetry, savings dashboard).
+The installer does **everything** — it patches the headroom package,
+writes the launchd services, refreshes the session JWT, and verifies
+end-to-end with a real M3 request. Re-run it any time: it's idempotent
+and safe to run after a Headroom upgrade.
+
+When the installer finishes you'll see:
+
+```
+✓ Headroom × MiniMax is installed and working.
+  Dashboard:        http://127.0.0.1:8787/dashboard
+  Health:           http://127.0.0.1:8787/health
+  Token refresher:  every 6h via launchd (auto-reboot on token change)
+  Logs:             ~/.headroom/logs/proxy.log
+```
+
+Point any Anthropic-compat client at `http://127.0.0.1:8787`:
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787 ANTHROPIC_MODEL=MiniMax-M3 claude
+```
+
+### Production-ready features
+
+This fork ships three pieces that turn a fragile DIY setup into a
+"set and forget" deployment:
+
+1. **Auto-refreshing session JWT** — a 6h-interval launchd job
+   (`com.headroom.minimax-token-refresher`) pulls the latest JWT from
+   MiniMax Code's local storage and writes it to the macOS keychain.
+   If the token changes, the headroom proxy is auto-restarted.
+2. **One-shot installer** — patches the headroom package, wires up
+   both launchd services, refreshes the token, and runs a smoke test.
+3. **`minimax-headroom-doctor`** — `bash scripts/minimax-deploy/minimax-headroom-doctor.sh`
+   diagnoses any issue and tells the user precisely what to fix.
+   Useful when a user reports "it doesn't work".
 
 ### Tested models
 
@@ -126,6 +143,46 @@ For real production traffic (Claude Code, OpenCode, Aider all making
 multi-turn tool-using requests against MiniMax M3), the
 prefix-cache + SmartCrusher combo typically lands in the **50-80%
 savings** range, with cache alignment doing the heavy lifting.
+
+---
+
+## Troubleshooting
+
+When something goes wrong, run the doctor first:
+
+```bash
+bash scripts/minimax-deploy/minimax-headroom-doctor.sh
+```
+
+It checks all five failure modes and tells you exactly what to fix:
+
+| Symptom | Likely cause | Fix |
+| :------ | :----------- | :-- |
+| `401 auth failed` from gateway | Session JWT expired or missing from keychain | Re-run `install-minimax-headroom.sh` (it auto-refreshes) |
+| `MiniMax Code` not showing in dashboard | Detection shim not applied to `auth_mode.py` | Re-run the installer |
+| Streaming returns 401 | Streaming shim not applied to `handlers/streaming.py` | Re-run the installer |
+| Headroom proxy down | launchd service crashed | `launchctl kickstart -k gui/$(id -u)/com.headroom.default` |
+| Token keeps getting revoked | MiniMax Code logged out | Re-open MiniMax Code and log in |
+| `headroom-ai` not found at `/Users/axel/.local/bin/headroom` | You installed the upstream `headroom` package, not this fork | `uv tool install -e ~/headroom` (re-clone first) |
+
+### Manually re-running just one piece
+
+```bash
+# Just refresh the token (no restart of headroom):
+bash scripts/minimax-deploy/minimax-headroom-token-refresher.sh
+
+# Restart headroom (picks up new token from env):
+launchctl kickstart -k gui/$(id -u)/com.headroom.default
+
+# Force a fresh install (idempotent — only re-applies what's missing):
+bash scripts/minimax-deploy/install-minimax-headroom.sh
+```
+
+### Logs
+
+- **Proxy log**: `~/.headroom/logs/proxy.log`
+- **Token-refresher log**: `~/.headroom/logs/token-refresher.log`
+- **Live tail**: `tail -f ~/.headroom/logs/proxy.log`
 
 ---
 

@@ -11,6 +11,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.27.0-minimax.2] - 2026-06-23
+
+### Added
+- **One-shot installer** (`scripts/minimax-deploy/install-minimax-headroom.sh`).
+  Idempotent, handles every error path that a non-technical user could
+  hit (Codex not installed, not logged in, headroom not installed,
+  patches not applied, keychain write fails, proxy doesn't come up,
+  M3 request fails). 8 numbered steps, each with a clear "✓ / ✗ / ⚠"
+  outcome. Re-run any time — safe after a Headroom upgrade.
+- **Auto-refreshing session JWT** via a second launchd job
+  (`com.headroom.minimax-token-refresher`) that runs every 6 hours.
+  Pulls the latest JWT from MiniMax Code's leveldb, picks the one
+  with the highest `exp` claim, writes it to the macOS keychain, and
+  calls `launchctl kickstart -k` on `com.headroom.default` if the
+  token actually changed. No human in the loop.
+- **`minimax-headroom-doctor`**: read-only diagnostic that checks all
+  five failure modes (Codex installed, headroom-ai installed, patches
+  applied, services loaded, M3 request works). Prints a precise
+  remediation for each failure.
+- **Patches directory** (`scripts/minimax-patches/`) holding the
+  three pre-built file patches the installer applies to the installed
+  headroom package:
+    - `headroom/proxy/server.py` — non-streaming auth shim
+    - `headroom/proxy/handlers/streaming.py` — streaming auth shim
+    - `headroom/proxy/auth_mode.py` — agent-detection shim
+  These are the exact bytes the installer drops into
+  `~/.local/share/uv/tools/headroom-ai/.../site-packages/headroom/...`
+  on the user's box.
+- **Troubleshooting section** in `README-MINIMAX.md` mapping the 6
+  most common "it doesn't work" reports to their fix.
+
+### Changed
+- `run-headroom.sh` is now a 1:1 copy shipped in the repo
+  (`scripts/minimax-deploy/run-headroom.sh`) so the installer can
+  reference a known-good version, not one that drifts per machine.
+
+---
+
 ## [0.27.0-minimax.1] - 2026-06-23
 
 ### Added
