@@ -249,3 +249,70 @@ Comportamento:
 
 Sicuro: mai loggato in chiaro. Idempotente: puoi rieseguire a mano quando vuoi.
 
+---
+
+## Installare dal fork (handler nativo MiniMax)
+
+Il pass-through puro (sezione sopra) funziona perché il wire format di
+MiniMax è identico ad Anthropic. **Ma**: headroom registra tutto come
+`provider="anthropic"` nei record — quindi il cost-tracking / la
+dashboard per-provider non distingue traffico MiniMax da traffico
+Anthropic.
+
+Questo branch (`v0.27.0-minimax.5`) aggiunge un **handler nativo MiniMax**
+in headroom: quando il `model` nel body della richiesta è
+`MiniMax-M3`, `MiniMax-M2.7-highspeed`, ecc., il proxy instrada a
+`MiniMaxHandlerMixin` invece di `AnthropicHandlerMixin`. Risultato:
+record con `provider="minimax"`, breakdown per-provider corretto nella
+dashboard, costi reali MiniMax.
+
+### Installazione
+
+```bash
+# 1. Backup della versione corrente
+uv tool list | grep headroom
+# Salva versione per rollback
+
+# 2. Disinstalla il pacchetto upstream
+uv tool uninstall headroom-ai
+
+# 3. Installa dal fork (branch main, versione pinned via tag)
+uv tool install --with proxy \
+    "git+https://github.com/axelfleureau/headroom.git@v0.27.0-minimax.5#egg=headroom-ai"
+```
+
+### Verifica
+
+```bash
+# Mostra versione installata — deve essere v0.27.0-minimax.5
+headroom --version 2>/dev/null || \
+    uv tool list | grep headroom
+
+# Il file handler deve esistere nel pacchetto installato:
+find $(uv tool dir)/headroom-ai -name 'minimax.py' -path '*handlers*'
+# → .../handlers/minimax.py
+```
+
+### Rollback all'upstream
+
+```bash
+uv tool uninstall headroom-ai
+uv tool install "headroom-ai[proxy]"
+# Il pass-through puro (sezione "Install") continua a funzionare
+# anche con upstream, perché il routing è agnostico al provider.
+```
+
+### Differenza concreta
+
+| | Pass-through (zero-patch) | Handler nativo (fork) |
+|---|---|---|
+| **provider nei record** | `anthropic` ❌ | `minimax` ✅ |
+| **cost-tracking** | costi Anthropic ❌ | costi MiniMax ✅ |
+| **dashboard per-provider** | mescola M3 con Sonnet ❌ | separato ✅ |
+| **smart-crusher** | attivo (funziona uguale) | attivo + log per-provider |
+| **richiede patch** | no | no (installazione via uv) |
+| **rolling upgrade** | `uv tool install headroom-ai` | `uv tool install --reinstall headroom-ai` per tornare |
+
+Per il 99% dei task il pass-through basta. L'handler nativo serve
+solo se vuoi la dashboard MiniMax distinta da Anthropic.
+

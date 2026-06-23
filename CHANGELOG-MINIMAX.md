@@ -11,6 +11,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.27.0-minimax.5] - 2026-06-23
+
+### Added — native MiniMax handler
+
+- **`headroom/proxy/handlers/minimax.py`** — nuovo `MiniMaxHandlerMixin`
+  che riusa `AnthropicHandlerMixin` (wire-compat) ma marca tutti i
+  record con `provider="minimax"` invece di `provider="anthropic"`.
+  Risultato: cost-tracking separato, dashboard per-provider corretto,
+  SmartCrusher/SmartRouter loggano per-provider reale.
+- **Routing condizionale in `proxy_routes.py`**: il body della richiesta
+  viene letto per estrarre `model`; se matcha `MiniMax-M*` (anche con
+  prefisso `minimax/`) il proxy instrada a `handle_minimax_messages`,
+  altrimenti ad `handle_anthropic_messages` (default).
+- **Strip del prefisso `minimax/`**: prima di inoltrare upstream,
+  rimuove il prefisso provider (es. `minimax/MiniMax-M3` → `MiniMax-M3`)
+  perché il gateway MiniMax accetta solo nomi bare.
+- **Body rewrite thread-safe via Starlette `_body`** quando possibile,
+  con fallback su `model_override` per il passaggio pulito al delegate.
+
+### How to install from fork
+
+```bash
+uv tool uninstall headroom-ai
+uv tool install --with proxy \
+    "git+https://github.com/axelfleureau/headroom.git@v0.27.0-minimax.5#egg=headroom-ai"
+```
+
+Rollback:
+```bash
+uv tool uninstall headroom-ai
+uv tool install "headroom-ai[proxy]"
+```
+
+### Why
+
+Il pass-through puro (release v4) funziona già perfettamente — il wire
+format è identico ad Anthropic. Ma headroom registra tutto come
+`provider="anthropic"` nei record, quindi la dashboard mescola M3/M2.7
+con Sonnet/Haiku. Questa release separa i due bucket.
+
+---
+
 ## [0.27.0-minimax.4] - 2026-06-23
 
 ### Added — production hardening

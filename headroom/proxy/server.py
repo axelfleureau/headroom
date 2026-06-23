@@ -537,6 +537,7 @@ from headroom.proxy.handlers import (  # noqa: E402
     BatchHandlerMixin,
     BedrockHandlerMixin,
     GeminiHandlerMixin,
+    MiniMaxHandlerMixin,
     OpenAIHandlerMixin,
     StreamingMixin,
 )
@@ -545,6 +546,7 @@ from headroom.proxy.handlers import (  # noqa: E402
 class HeadroomProxy(
     StreamingMixin,
     AnthropicHandlerMixin,
+    MiniMaxHandlerMixin,
     OpenAIHandlerMixin,
     GeminiHandlerMixin,
     BatchHandlerMixin,
