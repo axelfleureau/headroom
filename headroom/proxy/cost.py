@@ -764,7 +764,31 @@ class CostTracker:
 
         Returns (cache_read, cache_write, uncached) per-token costs, or None
         if pricing is unavailable. Uses LiteLLM's native cache pricing data.
+
+        Providers that ship their own pricing (e.g. MiniMax) get a
+        deterministic fallback so cost tracking works on Python 3.14
+        where litellm is not installed.
         """
+        # MiniMax fallback — covers the wire-format provider that isn't
+        # in the litellm registry. The MiniMaxProvider class already
+        # declares per-million-token pricing; convert to per-token here.
+        try:
+            from headroom.providers.minimax import (
+                MODEL_INPUT_COST as _MINIMAX_INPUT,
+                MODEL_OUTPUT_COST as _MINIMAX_OUTPUT,
+            )
+
+            normalised = model.split("/")[-1]
+            if normalised in _MINIMAX_INPUT:
+                # MiniMax M3/M2.x have a 90% cache_read discount and 25%
+                # cache_write premium (matches what the gateway exposes).
+                uncached_per_token = _MINIMAX_INPUT[normalised] / 1_000_000
+                cache_read = uncached_per_token * 0.10
+                cache_write = uncached_per_token * 1.25
+                return (cache_read, cache_write, uncached_per_token)
+        except ImportError:
+            pass
+
         litellm = _get_litellm_module()
         if litellm is None:
             return None
