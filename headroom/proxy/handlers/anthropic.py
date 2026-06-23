@@ -673,6 +673,17 @@ class AnthropicHandlerMixin:
             # from User-Agent or X-Client. Surfaced via the funnel into
             # PERF logs and RequestLog.tags — see RequestOutcome.client.
             client = classify_client(headers, default="claude")
+            # If the request body identifies a non-Anthropic model
+            # (e.g. MiniMax-M3, codex/*), the harness is the provider's
+            # own app, not Claude Code — override the default.
+            if body and isinstance(body, dict):
+                _model = (body.get("model") or "").lower()
+                if "minimax" in _model or _model.startswith("minimax/"):
+                    client = "minimax-code"
+                elif "codex" in _model:
+                    client = "codex"
+                elif "gemini" in _model and "claude" not in _model:
+                    client = "gemini"
             # PR-A5 (P5-49): strip internal x-headroom-* from upstream-bound
             # headers AFTER `_extract_tags` reads them. Inbound bypass gating
             # uses `request.headers.get(...)` directly above; memory user-id
@@ -2681,6 +2692,17 @@ class AnthropicHandlerMixin:
         headers.pop("host", None)
         headers.pop("content-length", None)
         client = classify_client(headers, default="claude")
+        # If the request body identifies a non-Anthropic model
+        # (e.g. MiniMax-M3, codex/*), the harness is the provider's
+        # own app, not Claude Code — override the default.
+        if body and isinstance(body, dict):
+            _model = (body.get("model") or "").lower()
+            if "minimax" in _model or _model.startswith("minimax/"):
+                client = "minimax-code"
+            elif "codex" in _model:
+                client = "codex"
+            elif "gemini" in _model and "claude" not in _model:
+                client = "gemini"
         tags = extract_tags(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
         from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
@@ -2941,6 +2963,17 @@ class AnthropicHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         client = classify_client(headers, default="claude")
+        # If the request body identifies a non-Anthropic model
+        # (e.g. MiniMax-M3, codex/*), the harness is the provider's
+        # own app, not Claude Code — override the default.
+        if body and isinstance(body, dict):
+            _model = (body.get("model") or "").lower()
+            if "minimax" in _model or _model.startswith("minimax/"):
+                client = "minimax-code"
+            elif "codex" in _model:
+                client = "codex"
+            elif "gemini" in _model and "claude" not in _model:
+                client = "gemini"
         tags = extract_tags(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
         from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
@@ -3064,6 +3097,17 @@ class AnthropicHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         client = classify_client(headers, default="claude")
+        # If the request body identifies a non-Anthropic model
+        # (e.g. MiniMax-M3, codex/*), the harness is the provider's
+        # own app, not Claude Code — override the default.
+        if body and isinstance(body, dict):
+            _model = (body.get("model") or "").lower()
+            if "minimax" in _model or _model.startswith("minimax/"):
+                client = "minimax-code"
+            elif "codex" in _model:
+                client = "codex"
+            elif "gemini" in _model and "claude" not in _model:
+                client = "gemini"
         tags = extract_tags(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
         from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers

@@ -264,6 +264,8 @@ def _classify_agent_from_log(entry: dict[str, Any]) -> tuple[str, str, str]:
     model = str(entry.get("model") or "").lower()
     if "codex" in model:
         return "codex", _agent_label("codex"), "model"
+    if "minimax" in model or "m2.7" in model or "m3" == model[-2:] or "m2" == model[-2:]:
+        return "minimax", _agent_label("minimax"), "model"
     if "claude" in model:
         return "claude-code", _agent_label("claude-code"), "model"
     if "gemini" in model:

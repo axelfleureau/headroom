@@ -205,6 +205,15 @@ CLIENT_UA_MAP: tuple[tuple[str, str], ...] = (
     ("droid/", "droid"),
     ("opencode/", "opencode"),
     ("github-copilot/", "copilot"),
+    # MiniMax ecosystem — the MiniMax Code desktop app and its
+    # embedded opencode runtime talk to Headroom without any of the
+    # above fingerprints. Match on the official app / process names
+    # so requests don't fall through to the anthropic "default".
+    ("minimax code/", "minimax-code"),
+    ("minimax code ", "minimax-code"),
+    ("minimax-agent/", "minimax-code"),
+    ("mavis code/", "minimax-code"),
+    ("mavis code ", "minimax-code"),
     # Google's experimental harness
     ("antigravity/", "antigravity"),
     # AWS Strands Agents SDK. The default openai-python User-Agent

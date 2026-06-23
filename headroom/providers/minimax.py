@@ -144,3 +144,14 @@ class MiniMaxProvider(Provider):
     def supports_streaming(self, model: str) -> bool:
         """Return whether the model supports streaming."""
         return True
+
+    def supports_model(self, model: str) -> bool:
+        """Return whether this provider recognises the given model name.
+
+        Accepts both bare model names ("MiniMax-M3") and the prefixed
+        form ("minimax/MiniMax-M3"). Returns True even for unknown
+        models — the upstream API is permissive and will return its
+        own error for genuinely invalid ones.
+        """
+        normalized = model.split("/")[-1]
+        return bool(normalized)
