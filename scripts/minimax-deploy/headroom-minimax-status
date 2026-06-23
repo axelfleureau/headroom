@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# headroom-minimax-status — Diagnostica read-only. Non modifica nulla.
+#
+# Mostra:
+#   - MiniMax baseURL effettivo in tutti i config Mavis
+#   - Headroom Codex health (porta 8787, default)
+#   - Headroom MiniMax health (porta 8788, profilo separato) se attivo
+#   - Test route /v1/messages
+#   - Spazio disco libero
+#   - LaunchAgent attivi correlati
+#   - Se MiniMax sta usando diretto, headroom-MiniMax, o headroom-Codex
+#   - keychain status (no token dump)
+
+set -uo pipefail
+
+green()  { printf "\033[32m%s\033[0m\n" "$*"; }
+red()    { printf "\033[31m%s\033[0m\n" "$*" >&2; }
+yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
+bold()   { printf "\033[1m%s\033[0m\n" "$*"; }
+section(){ printf "\n\033[1m[%s]\033[0m\n" "$*"; }
+
+MINIMAX_BASEURL="https://agent.minimax.io/mavis/api/v1/llm"
+CODEX_PORT=8787
+MINIMAX_PORT=8788
+
+bold "  Headroom × MiniMax STATUS (read-only)"
+echo "    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# ── 1. Config Mavis ───────────────────────────────────────────────────
+section "1. Mavis config (baseURL)"
+ALL_OK=1
+for f in "$HOME/.mavis/config.yaml" $(find "$HOME/.mavis/agents/" -name "opencode.json" 2>/dev/null); do
+  [ -f "$f" ] || continue
+  AGENT=$(basename "$f" 2>/dev/null)
+  BASEURL=$(grep '"baseURL"\|baseURL:' "$f" 2>/dev/null | head -1 | tr -s ' ' | sed 's/^[^:]*://;s/^ *//')
+  if [ -z "$BASEURL" ]; then
+    continue
+  fi
+  if [ "$BASEURL" = "$MINIMAX_BASEURL" ] || echo "$BASEURL" | grep -q "agent.minimax.io"; then
+    if echo "$BASEURL" | grep -q "127.0.0.1"; then
+      yellow "  ! $AGENT → $BASEURL (via headroom)"
+    else
+      green "  ✓ $AGENT → $BASEURL (diretto)"
+    fi
+  elif echo "$BASEURL" | grep -q "127.0.0.1"; then
+    if echo "$BASEURL" | grep -q "8787"; then
+      yellow "  ! $AGENT → $BASEURL (via headroom Codex — non MiniMax)"
+    else
+      yellow "  ! $AGENT → $BASEURL (via headroom custom)"
+    fi
+    ALL_OK=0
+  else
+    red "  ✗ $AGENT → $BASEURL (unknown)"
+    ALL_OK=0
+  fi
+done
+
+# ── 2. Headroom Codex (porta 8787) ────────────────────────────────────
+section "2. Headroom Codex (porta $CODEX_PORT)"
+CODEX_HEALTH=$(curl -sS --max-time 3 "http://127.0.0.1:$CODEX_PORT/health" 2>/dev/null)
+if [ -n "$CODEX_HEALTH" ]; then
+  CODEX_UPSTREAM=$(echo "$CODEX_HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('checks',{}).get('upstream',{}).get('url','?'))" 2>/dev/null)
+  CODEX_STATUS=$(echo "$CODEX_HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null)
+  green "  ✓ $CODEX_STATUS, upstream=$CODEX_UPSTREAM"
+  if echo "$CODEX_UPSTREAM" | grep -q "minimax"; then
+    red "  ✗ Codex è instradato verso MiniMax! Verificare plist"
+  fi
+else
+  yellow "  ! headroom Codex non risponde su $CODEX_PORT (normale se spento)"
+fi
+
+# Test /v1/messages verso Codex
+CODEX_RESP=$(curl -sS --max-time 5 -X POST "http://127.0.0.1:$CODEX_PORT/v1/messages" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: dummy" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"claude-sonnet-test","max_tokens":5,"messages":[{"role":"user","content":"ok"}]}' 2>&1)
+if echo "$CODEX_RESP" | grep -q "401\|auth"; then
+  echo "  /v1/messages Codex: raggiungibile (401 = auth ok)"
+elif echo "$CODEX_RESP" | grep -q "404\|Not Found"; then
+  echo "  /v1/messages Codex: 404 (normale, solo header check)"
+else
+  echo "  /v1/messages Codex: HTTP $CODEX_RESP"
+fi
+
+# ── 3. Headroom MiniMax (porta 8788) ─────────────────────────────────
+section "3. Headroom MiniMax (porta $MINIMAX_PORT, profilo separato)"
+MINIMAX_HEALTH=$(curl -sS --max-time 3 "http://127.0.0.1:$MINIMAX_PORT/health" 2>/dev/null)
+if [ -n "$MINIMAX_HEALTH" ]; then
+  MINIMAX_UPSTREAM=$(echo "$MINIMAX_HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('checks',{}).get('upstream',{}).get('url','?'))" 2>/dev/null)
+  MINIMAX_STATUS=$(echo "$MINIMAX_HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null)
+  if echo "$MINIMAX_UPSTREAM" | grep -q "minimax"; then
+    green "  ✓ $MINIMAX_STATUS, upstream=$MINIMAX_UPSTREAM"
+  else
+    yellow "  ! $MINIMAX_STATUS, upstream=$MINIMAX_UPSTREAM (non è MiniMax!)"
+  fi
+
+  # Test /v1/messages MiniMax
+  MRESP=$(curl -sS --max-time 10 -X POST "http://127.0.0.1:$MINIMAX_PORT/v1/messages" \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: dummy" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "User-Agent: headroom-minimax-status" \
+    -d '{"model":"MiniMax-M2.7-highspeed","max_tokens":10,"messages":[{"role":"user","content":"ok"}]}' 2>&1)
+  if echo "$MRESP" | grep -q '"MiniMax-M2.7-highspeed"'; then
+    green "  ✓ /v1/messages MiniMax: modello risponde"
+  elif echo "$MRESP" | grep -q "401\|auth failed\|token"; then
+    yellow "  ! /v1/messages MiniMax: 401 (auth mancante o scaduto, OK)"
+  else
+    red "  ✗ /v1/messages MiniMax: $(echo $MRESP | head -c 100)"
+  fi
+else
+  yellow "  ! headroom MiniMax non attivo (normale, opt-in)"
+fi
+
+# ── 4. LaunchAgent attivi ─────────────────────────────────────────────
+section "4. LaunchAgent correlati"
+LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
+echo "  com.headroom.default (Codex):"
+if launchctl print "gui/$(id -u)/com.headroom.default" >/dev/null 2>&1; then
+  STATE=$(launchctl print "gui/$(id -u)/com.headroom.default" 2>/dev/null | grep "state" | head -1 | awk -F= '{print $2}' | xargs)
+  green "    ✓ loaded (state=$STATE)"
+else
+  yellow "    ! non loaded"
+fi
+HAS_MINIMAX_ENV=$(grep -c "ANTHROPIC_TARGET_API_URL.*minimax" "$LAUNCH_AGENTS/com.headroom.default.plist" 2>/dev/null)
+if [ "$HAS_MINIMAX_ENV" -gt 0 ]; then
+  red "    ✗ plist contiene ANTHROPIC_TARGET_API_URL verso MiniMax — eseguire disable"
+fi
+
+echo "  com.headroom.minimax-enable (MiniMax profilo separato):"
+if launchctl print "gui/$(id -u)/com.headroom.minimax-enable" >/dev/null 2>&1; then
+  STATE=$(launchctl print "gui/$(id -u)/com.headroom.minimax-enable" 2>/dev/null | grep "state" | head -1 | awk -F= '{print $2}' | xargs)
+  green "    ✓ loaded (state=$STATE)"
+else
+  yellow "    ! non loaded (opt-in)"
+fi
+
+echo "  com.headroom.minimax-token-refresher (auto-refresh JWT):"
+if launchctl print "gui/$(id -u)/com.headroom.minimax-token-refresher" >/dev/null 2>&1; then
+  STATE=$(launchctl print "gui/$(id -u)/com.headroom.minimax-token-refresher" 2>/dev/null | grep "state" | head -1 | awk -F= '{print $2}' | xargs)
+  yellow "    ! loaded (state=$STATE) — consigliato: rimuovere, headroom-MiniMax legge env in startup"
+else
+  green "    ✓ non loaded"
+fi
+
+# ── 5. Spazio disco ───────────────────────────────────────────────────
+section "5. Spazio disco"
+FREE_GB=$(df -g "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+if [ -n "$FREE_GB" ] && [ "$FREE_GB" -ge 5 ]; then
+  green "  ✓ ${FREE_GB}GB liberi"
+elif [ -n "$FREE_GB" ] && [ "$FREE_GB" -ge 2 ]; then
+  yellow "  ! ${FREE_GB}GB liberi (soglia 2GB OK, ma attenzione)"
+else
+  red "  ✗ ${FREE_GB:-?}GB liberi (< 2GB)"
+fi
+
+# ── 6. Keychain (status, no dump) ─────────────────────────────────────
+section "6. Keychain (status)"
+if security find-generic-password -s "minimax-session-token" >/dev/null 2>&1; then
+  yellow "  ! 'minimax-session-token' presente nel keychain"
+  echo "    (non dump del valore — solo presenza)"
+else
+  green "  ✓ keychain pulito (nessun token MiniMax)"
+fi
+
+# ── 7. Headroom package patches ───────────────────────────────────────
+section "7. headroom-ai package (patch check)"
+HEADROOM_PKG="/Users/axel/.local/share/uv/tools/headroom-ai/lib/python3.11/site-packages/headroom"
+PATCHED=0
+for f in "$HEADROOM_PKG/proxy/server.py" "$HEADROOM_PKG/proxy/handlers/streaming.py" "$HEADROOM_PKG/proxy/auth_mode.py"; do
+  if [ -f "$f" ] && grep -q "MINIMAX_SESSION_TOKEN\|minimax-code" "$f" 2>/dev/null; then
+    PATCHED=$((PATCHED+1))
+    red "  ✗ $f: PATCHED"
+  fi
+done
+if [ "$PATCHED" -eq 0 ]; then
+  green "  ✓ headroom-ai pulito (nessuna patch MiniMax nel package)"
+fi
+
+# ── 8. Routing effettivo ──────────────────────────────────────────────
+section "8. Routing MiniMax (dove vanno le richieste)"
+echo "  config di base:   $MINIMAX_BASEURL (gateway diretto)"
+if curl -sS --max-time 2 "http://127.0.0.1:$MINIMAX_PORT/health" >/dev/null 2>&1; then
+  echo "  headroom-MiniMax: ATTIVO su $MINIMAX_PORT (clients devono usare 127.0.0.1:$MINIMAX_PORT)"
+else
+  echo "  headroom-MiniMax: NON ATTIVO (clients usano il gateway diretto)"
+fi
+if curl -sS --max-time 2 "http://127.0.0.1:$CODEX_PORT/health" >/dev/null 2>&1; then
+  CODEX_UP=$(curl -sS --max-time 2 "http://127.0.0.1:$CODEX_PORT/health" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('checks',{}).get('upstream',{}).get('url','?'))" 2>/dev/null)
+  echo "  headroom-Codex:    ATTIVO su $CODEX_PORT (upstream=$CODEX_UP)"
+fi
+
+# ── 9. Log tail ───────────────────────────────────────────────────────
+section "9. Ultimo errore rilevante (no token dump)"
+LOG="$HOME/.headroom/logs/proxy.log"
+if [ -f "$LOG" ]; then
+  LAST_ERR=$(grep -E "ERROR|WARNING" "$LOG" 2>/dev/null | grep -v "REDACTED" | tail -1 | head -c 200)
+  if [ -n "$LAST_ERR" ]; then
+    echo "  $LAST_ERR"
+  else
+    green "  ✓ nessun errore recente"
+  fi
+else
+  echo "  (no proxy log)"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────
+echo ""
+section "10. Summary"
+if [ "$ALL_OK" -eq 1 ] && [ "$PATCHED" -eq 0 ]; then
+  green "  ✓ Stato pulito. MiniMax funziona diretto, Codex intatto."
+else
+  yellow "  ! Vedi dettagli sopra. Azioni consigliate:"
+  echo "    headroom-minimax-disable.sh   # per rollback totale"
+  echo "    headroom-minimax-enable.sh    # per opt-in MiniMax via headroom"
+fi

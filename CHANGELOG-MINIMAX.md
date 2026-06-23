@@ -11,6 +11,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.27.0-minimax.3] - 2026-06-23
+
+### Changed — major architectural simplification
+
+- **NO patch al package headroom-ai.** L'analisi del codice reale di Mavis Code
+  (`daemon.js`) ha rivelato che Mavis Code gestisce già l'auth via header
+  `Token: <jwt>` tramite `readMavisAuthToken()`. Headroom forwarda i client
+  headers intatti al gateway, quindi nessuna auth shim è necessaria.
+- **Profilo headroom separato** su porta 8788 invece di patchare il profilo
+  Codex esistente. Il plist `com.headroom.default` resta intatto.
+- **Auth model chiarito**: il gateway `agent.minimax.io` accetta solo
+  `Token: <jwt>` (non `Authorization: Bearer`) per managed providers.
+  Managed providers identificati da `MANAGED_PROVIDER_HOSTS`:
+  agent.minimax.io, agent.minimaxi.com, matrix-*.xaminim.com.
+
+### Added
+
+- **`minimax-token-fetch.sh`** — estrae JWT dal localStorage leveldb di
+  Mavis Code (`~/Library/Application Support/MiniMax Agent/Local Storage/leveldb/`),
+  seleziona quello con `exp` claim più alto (= più recente), output solo
+  su stdout (mai log).
+- **`minimax-with-fallback.sh`** — wrapper che testa headroom-MiniMax (8788)
+  e ripiega automaticamente sul gateway diretto se il proxy è giù.
+  Failover in <100ms, mai bloccante.
+- **`headroom-minimax-enable.sh` v3** — riscritto per la nuova architettura:
+  - estrae JWT live
+  - salva nel keychain
+  - scrive plist dedicato (no patch al package)
+  - verifica `/v1/messages` end-to-end con token reale
+  - rollback automatico se qualsiasi step fallisce
+  - nessuna modifica a `~/.mavis/config.yaml` o `opencode.json`
+
+### Removed
+
+- Le patch a `handlers/anthropic.py`, `streaming.py`, `auth_mode.py` sono
+  state rimosse perché inutili (Mavis Code già manda `Token: <jwt>` corretto).
+- Lo script `minimax-headroom-token-refresher.sh` (LaunchAgent auto-refresh)
+  è stato rimosso. Per refresh, rieseguire `headroom-minimax-enable.sh --yes`.
+
+### Verified end-to-end
+
+- M2.7-highspeed via gateway diretto con header Token → 200 OK
+- M2.7-highspeed via headroom-MiniMax (8788) con header Token → 200 OK
+- Codex profile (8787) → Anthropic API intatto
+- Fallback wrapper: proxy attivo → 8788, proxy spento → diretto
+
+---
+
 ## [0.27.0-minimax.2] - 2026-06-23
 
 ### Added

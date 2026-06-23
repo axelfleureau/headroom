@@ -1,282 +1,227 @@
-# Headroom × MiniMax — Native MiniMax M3 / M2.7 Backend
+# Headroom × MiniMax — Native MiniMax M3 / M2.7 Backend (v3)
 
 This fork of [`chopratejas/headroom`](https://github.com/chopratejas/headroom)
-adds **first-class MiniMax provider support** so the Headroom optimization
-proxy can route any Anthropic-format traffic (Claude Code, OpenAI-compat
-clients, custom agents) through MiniMax models **without requiring a
-separate MiniMax API key**.
+adds **first-class MiniMax provider support** for the **Mavis Code gateway**
+(`agent.minimax.io`).
 
-It does this by reusing the same per-session JWT that authenticates
-[MiniMax Code](https://agent.minimax.io) — the gateway at
-`agent.minimax.io/mavis/api/v1/llm/v1` accepts that JWT and serves
-`MiniMax-M3`, `MiniMax-M2.7-highspeed`, `MiniMax-M2.7` exactly like the
-official MiniMax Code client does.
+## Architettura finale (zero-patch)
 
-> **TL;DR** — Set one env var and Headroom can run Claude Code, OpenCode,
-> Aider, or any Anthropic-compat client against MiniMax M3 in ~30 seconds.
+```
+Mavis Code (or any Anthropic-compat client)
+   ↓  (sends Token: <jwt> header automatically)
+http://127.0.0.1:8788   ←  headroom raw (no auth shim)
+   ↓  (passes ALL client headers intatti, including Token)
+agent.minimax.io/mavis/api/v1/llm/v1
+   ↓
+MiniMax M3 / M2.7 / M2.7-highspeed
+```
+
+**Nessuna patch al package headroom-ai.** Headroom funziona come proxy
+Anthropic-compat raw: passa i client headers al gateway MiniMax. Il client
+(Mavis Code, Claude Code, OpenCode) manda già `Token: <jwt>` con il session
+JWT — headroom non deve fare nulla.
+
+### Perché questa architettura
+
+Tre lezioni dall'analisi del codice reale di Mavis Code
+(`daemon.js`, riga 69981 e 241860):
+
+1. **Mavis Code gestisce `Token: <jwt>`** tramite `authTokenProvider: () =>
+   readMavisAuthToken()` — non usa `Authorization: Bearer` per managed providers
+2. **I managed providers** sono identificati da URL host: `agent.minimax.io`,
+   `agent.minimaxi.com`, `matrix-*.xaminim.com` (vedi `MANAGED_PROVIDER_HOSTS`)
+3. **Il JWT vive nel localStorage** di Mavis Code a
+   `~/Library/Application Support/MiniMax Agent/Local Storage/leveldb/`
+
+Patchare il package headroom-ai per re-injectare il token è fragile (si rompe a
+ogni upgrade di headroom-ai). Molto meglio lasciare che Mavis Code gestisca
+l'auth da solo, e headroom resti un proxy trasparente.
 
 ---
 
-## Why this exists
+## Installazione (utente finale)
 
-`headroom-ai` already supports 11+ LLM backends (Anthropic, OpenAI,
-Gemini, Vertex, Bedrock, LiteLLM, any-llm, Cloud Code, etc.) but **not
-MiniMax**, despite MiniMax being a first-class Anthropic-format provider
-with a 1M-context M3 flagship model. The official MiniMax Code
-subscription is bundled into the MiniMax Code app and authenticates via
-a per-session JWT, which doesn't fit the `Authorization: Bearer
-<static-key>` model Headroom expects.
+### Requisiti
 
-This fork closes that gap in two ways:
+- macOS con [Mavis Code](https://agent.minimax.io) installato e loggato
+- [headroom-ai](https://github.com/chopratejas/headroom) installato
+- `uv tool install headroom-ai[proxy]` (per le dipendenze fastapi/uvicorn)
 
-| Surface                                        | Auth                        | Use when                                            |
-| :--------------------------------------------- | :-------------------------- | :-------------------------------------------------- |
-| `agent.minimax.io/mavis/api/v1/llm/v1` (gateway) | per-session JWT from keychain | You already have MiniMax Code installed/logged in |
-| `api.minimaxi.com/anthropic` (direct API)      | static `sk-cp-…` key        | You have a MiniMax API subscription (Token Plan)    |
-
-The proxy auto-detects which surface you're targeting by URL.
-
----
-
-## Quick start — one-shot
-
-If you have MiniMax Code already installed and logged in:
+### One-shot
 
 ```bash
 git clone https://github.com/axelfleureau/headroom.git ~/headroom
-bash ~/headroom/scripts/minimax-deploy/install-minimax-headroom.sh
+mkdir -p ~/.mavis/bin
+cp ~/headroom/scripts/minimax-deploy/* ~/.mavis/bin/
+headroom-minimax-enable.sh --yes
 ```
 
-The installer does **everything** — it patches the headroom package,
-writes the launchd services, refreshes the session JWT, and verifies
-end-to-end with a real M3 request. Re-run it any time: it's idempotent
-and safe to run after a Headroom upgrade.
+Lo script:
+1. estrae il JWT session dal localStorage di Mavis Code
+2. lo salva nel keychain macOS
+3. scrive il plist `com.headroom.minimax-enable` (porta 8788, profilo separato)
+4. avvia il proxy
+5. verifica `/v1/messages` end-to-end con un modello MiniMax reale
+6. rollback automatico se qualcosa fallisce
 
-When the installer finishes you'll see:
-
-```
-✓ Headroom × MiniMax is installed and working.
-  Dashboard:        http://127.0.0.1:8787/dashboard
-  Health:           http://127.0.0.1:8787/health
-  Token refresher:  every 6h via launchd (auto-reboot on token change)
-  Logs:             ~/.headroom/logs/proxy.log
-```
-
-Point any Anthropic-compat client at `http://127.0.0.1:8787`:
+### Uso
 
 ```bash
-ANTHROPIC_BASE_URL=http://127.0.0.1:8787 ANTHROPIC_MODEL=MiniMax-M3 claude
+# Imposta ANTHROPIC_BASE_URL al proxy headroom-MiniMax (con fallback automatico)
+minimax-with-fallback.sh claude
+minimax-with-fallback.sh --model MiniMax-M3
+
+# Oppure manuale
+ANTHROPIC_BASE_URL=http://127.0.0.1:8788 \
+ANTHROPIC_MODEL=MiniMax-M3 \
+claude
 ```
 
-### Production-ready features
+### Comandi installati in `~/.mavis/bin/`
 
-This fork ships three pieces that turn a fragile DIY setup into a
-"set and forget" deployment:
-
-1. **Auto-refreshing session JWT** — a 6h-interval launchd job
-   (`com.headroom.minimax-token-refresher`) pulls the latest JWT from
-   MiniMax Code's local storage and writes it to the macOS keychain.
-   If the token changes, the headroom proxy is auto-restarted.
-2. **One-shot installer** — patches the headroom package, wires up
-   both launchd services, refreshes the token, and runs a smoke test.
-3. **`minimax-headroom-doctor`** — `bash scripts/minimax-deploy/minimax-headroom-doctor.sh`
-   diagnoses any issue and tells the user precisely what to fix.
-   Useful when a user reports "it doesn't work".
-
-### Tested models
-
-| Model                   | Context | Output | Notes                          |
-| :---------------------- | :------ | :----- | :----------------------------- |
-| `MiniMax-M3`            | 450K    | 128K   | Multimodal (text+image+video). |
-| `MiniMax-M2.7-highspeed` | 200K   | 128K   | Text only, lowest latency.     |
-| `MiniMax-M2.7`          | 200K    | 128K   | Text only, deepest reasoning.  |
-
-All three support extended thinking (`thinking: { type: "adaptive" }`).
+| Script | Cosa fa |
+| :----- | :------ |
+| `headroom-minimax-enable.sh` | Abilita opt-in (porta 8788, no patch) |
+| `headroom-minimax-disable.sh` | Rollback totale (headroom pulito + keychain pulito) |
+| `headroom-minimax-status` | Diagnostica read-only completa |
+| `minimax-token-fetch.sh` | Estrae JWT dal localStorage Mavis Code |
+| `minimax-with-fallback.sh` | Wrapper con fallback automatico proxy↔diretto |
 
 ---
 
-## Verifying the optimization is actually running
+## Modelli supportati
 
-After one-shot install, the **Headroom dashboard** (`http://127.0.0.1:8787/dashboard`)
-will start showing token savings after a few real calls. The optimization
-stack has four layers — all four are **on by default** for `--backend minimax`:
+| Modello | Context | Note |
+| :------ | :------ | :---- |
+| `MiniMax-M3` | 450K | Multimodal (text+image+video), flagship |
+| `MiniMax-M2.7-highspeed` | 200K | Text only, latenza minima |
+| `MiniMax-M2.7` | 200K | Text only, ragionamento profondo |
 
-| Layer                   | What it does                              | Default setting                        |
-| :---------------------- | :---------------------------------------- | :------------------------------------- |
-| **Prefix cache align**  | Detects stable system-prompt prefix across calls and asks the upstream to cache it | `HEADROOM_CACHE_ALIGNER=auto` (on) |
-| **SmartCrusher**        | Lossy compression of oversized message arrays | `min_tokens_to_crush=500` (only kicks in for conversations > 500 tokens) |
-| **Semantic cache**      | Skips upstream entirely for near-duplicate queries | `HEADROOM_CACHE=true` (on) |
-| **Output shaper**       | Reorders `tool_use` / `text` blocks for cheaper decoding | `HEADROOM_OUTPUT_SHAPER=1` (on) |
+Tutti supportano thinking blocks (`thinking: { type: "adaptive" }`).
 
-### Why the dashboard shows 0% after a few test calls
+---
 
-The savings percentage in the dashboard is computed as
-`(before - after) / before` averaged across **all** requests in the
-session. If you only made 1-2 small requests (the install smoke test),
-there is nothing for the compressors to do — and the percentage is 0%.
+## Refresh del token (ogni ~30 giorni)
 
-To see real numbers, run a small burst with a stable system prompt:
+Quando Mavis Code refresha il token (login/logout, expiry), il vecchio JWT
+diventa invalido. Per refreshare:
 
 ```bash
-SYSTEM="You are a helpful assistant. $(printf 'Reply concisely. %.0s' {1..100})"
-for i in $(seq 1 10); do
-  curl -sS -X POST http://127.0.0.1:8787/v1/messages \
-    -H "Content-Type: application/json" -H "x-api-key: dummy" \
-    -H "anthropic-version: 2023-06-01" -H "User-Agent: MiniMax Code/3.0.43" \
-    -d "$(python3 -c "
-import json
-print(json.dumps({
-  'model': 'MiniMax-M3',
-  'max_tokens': 30,
-  'system': '$SYSTEM',
-  'messages': [{'role':'user','content':f'Topic {$i} in 1 sentence'}]
-}))")" > /dev/null
-done
+# Refresh manuale
+minimax-token-fetch.sh > /tmp/token.txt
+security add-generic-password -s minimax-session-token -a mavis-code -w "$(cat /tmp/token.txt)" -U
+rm /tmp/token.txt
+launchctl kickstart -k gui/$(id -u)/com.headroom.minimax-enable
 ```
 
-After 10 calls the dashboard's **Prefix Cache Impact** card will show
-non-zero `cache_read` values (typically 60-90% of input tokens served
-from cache) and the **Token Savings** card will rise to 10-30% on
-the second burst onward.
+(Oppure rieseguire `headroom-minimax-enable.sh --yes` che fa tutto in automatico.)
 
-For real production traffic (Claude Code, OpenCode, Aider all making
-multi-turn tool-using requests against MiniMax M3), the
-prefix-cache + SmartCrusher combo typically lands in the **50-80%
-savings** range, with cache alignment doing the heavy lifting.
+Per refresh automatico ogni 6h, installare il LaunchAgent opzionale (vedi sezione
+seguente).
+
+---
+
+## Comportamento fallback
+
+Il wrapper `minimax-with-fallback.sh` testa `127.0.0.1:8788/health` ad ogni
+invocazione:
+
+- **Proxy attivo** → `ANTHROPIC_BASE_URL=http://127.0.0.1:8788` (headroom con
+  SmartCrusher + cache alignment + saving)
+- **Proxy giù** → `ANTHROPIC_BASE_URL=https://agent.minimax.io/mavis/api/v1/llm/v1`
+  (gateway diretto, nessuna ottimizzazione ma funziona)
+
+Logica safe: il proxy è opzionale, **mai bloccante**. Se headroom-MiniMax va giù
+per qualsiasi motivo (crash, port occupata, ecc.), il wrapper ripiega sul
+gateway diretto in <100ms.
 
 ---
 
 ## Troubleshooting
 
-When something goes wrong, run the doctor first:
+### "401 token is required" via proxy
+
+Causa: il JWT è scaduto. Soluzione:
+```bash
+headroom-minimax-enable.sh --yes  # ri-estrae token live
+```
+
+### "401 auth failed" via gateway diretto
+
+Causa: token scaduto, Mavis Code non loggato. Soluzione: apri Mavis Code, fai
+login, invia un messaggio per generare un nuovo token.
+
+### Proxy non si avvia su 8788
 
 ```bash
-bash scripts/minimax-deploy/minimax-headroom-doctor.sh
+headroom-minimax-status              # diagnostica completa
+lsof -iTCP:8788                      # chi sta occupando la porta?
 ```
 
-It checks all five failure modes and tells you exactly what to fix:
+### Cache alignment non si attiva
 
-| Symptom | Likely cause | Fix |
-| :------ | :----------- | :-- |
-| `401 auth failed` from gateway | Session JWT expired or missing from keychain | Re-run `install-minimax-headroom.sh` (it auto-refreshes) |
-| `MiniMax Code` not showing in dashboard | Detection shim not applied to `auth_mode.py` | Re-run the installer |
-| Streaming returns 401 | Streaming shim not applied to `handlers/streaming.py` | Re-run the installer |
-| Headroom proxy down | launchd service crashed | `launchctl kickstart -k gui/$(id -u)/com.headroom.default` |
-| Token keeps getting revoked | MiniMax Code logged out | Re-open MiniMax Code and log in |
-| `headroom-ai` not found at `/Users/axel/.local/bin/headroom` | You installed the upstream `headroom` package, not this fork | `uv tool install -e ~/headroom` (re-clone first) |
-
-### Manually re-running just one piece
-
-```bash
-# Just refresh the token (no restart of headroom):
-bash scripts/minimax-deploy/minimax-headroom-token-refresher.sh
-
-# Restart headroom (picks up new token from env):
-launchctl kickstart -k gui/$(id -u)/com.headroom.default
-
-# Force a fresh install (idempotent — only re-applies what's missing):
-bash scripts/minimax-deploy/install-minimax-headroom.sh
-```
-
-### Logs
-
-- **Proxy log**: `~/.headroom/logs/proxy.log`
-- **Token-refresher log**: `~/.headroom/logs/token-refresher.log`
-- **Live tail**: `tail -f ~/.headroom/logs/proxy.log`
+Lo SmartCrusher richiede conversazioni >500 token. Con chiamate piccole
+(smoke test), il saving è 0%. Per saving reale, usa sessioni multi-turno con
+system prompt stabile.
 
 ---
 
-## How the auth shim works
+## Come funziona l'auth (deep dive)
 
-The gateway `agent.minimax.io` accepts the same per-session JWT that
-MiniMax Code uses (`Authorization: Bearer <eyJ…>`). The JWT lives in
-Code's localStorage at:
+### Client → headroom (pass-through)
 
+Il client (Mavis Code o curl) manda:
 ```
-~/Library/Application Support/MiniMax Agent/Local Storage/leveldb/
-```
-
-Headroom's `_retry_request` now auto-detects gateway URLs and, when
-`MINIMAX_SESSION_TOKEN` is set, **replaces** the client's
-`Authorization` header with the JWT before forwarding upstream. The
-client can keep using a fake `x-api-key: dummy` — it's ignored.
-
-```python
-# headroom/proxy/server.py — _retry_request shim
-from urllib.parse import urlparse
-_host = (urlparse(url).hostname or "").lower()
-if "agent.minimax.io" in _host or _host == "minimax.io":
-    token = os.environ.get("MINIMAX_SESSION_TOKEN")
-    if token:
-        outbound_headers["authorization"] = f"Bearer {token}"
-        outbound_headers.pop("x-api-key", None)
+POST http://127.0.0.1:8788/v1/messages
+Authorization: Bearer <fake or absent>
+Token: eyJ... (solo Mavis Code lo manda)
+anthropic-version: 2023-06-01
+Content-Type: application/json
+{"model": "MiniMax-M3", ...}
 ```
 
-When the upstream is `api.minimaxi.com` instead, the shim injects
-`x-api-key: <sk-cp-…>` so the two surfaces are cleanly separated.
+### headroom → gateway (pass-through)
+
+Headroom aggiunge `content-type: application/json` e forwarda **tutti gli altri
+headers intatti** all'upstream `https://agent.minimax.io/mavis/api/v1/llm/v1`:
+```
+POST /v1/messages
+Token: eyJ... (passato invariato)
+anthropic-version: 2023-06-01
+Content-Type: application/json
+{"model": "MiniMax-M3", ...}
+```
+
+### Gateway → headroom → client
+
+Il gateway valida il JWT, chiama M3/M2.7, e ritorna la risposta. Headroom la
+forwarda al client intatta (applica solo SmartCrusher/cache alignment al body
+prima di forwardarlo upstream).
+
+### Perché "pass-through" funziona
+
+Il gateway `agent.minimax.io` riconosce l'header `Token: <jwt>` come managed
+provider auth (vedi `MANAGED_PROVIDER_HOSTS` in `daemon.js`). Headroom non
+deve manipolare l'auth — è già corretta.
 
 ---
 
-## CLI flags
+## File modificati
 
-```bash
-headroom proxy --backend minimax \
-  --minimax-api-url  https://api.minimaxi.com/anthropic \
-  --minimax-api-key  sk-cp-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
-  --port 8787
-```
+| File | Cosa |
+| :--- | :--- |
+| `headroom/providers/minimax.py` | `MiniMaxProvider` con M3/M2.7 metadata |
+| `headroom/providers/registry.py` | Wire minimax in api_overrides/targets |
+| `headroom/proxy/models.py` | `minimax_api_key/url/session_token` fields |
+| `headroom/cli/proxy.py` | `--backend minimax` + flag CLI |
+| `scripts/minimax-deploy/*.sh` | Script operativi (enable/disable/status/fetch/fallback) |
+| `README-MINIMAX.md` | Questa doc |
 
-When `--backend minimax` is set, Headroom also auto-installs the right
-token counters, cost tables, and context limits from
-`headroom/providers/minimax.py`.
-
----
-
-## Files added / changed
-
-| File                                  | Status   | What                                                |
-| :------------------------------------ | :------- | :-------------------------------------------------- |
-| `headroom/providers/minimax.py`       | **new**  | `MiniMaxProvider` with M3 / M2.7 token counts + costs |
-| `headroom/providers/registry.py`      | modified | wires MiniMax into `api_overrides` / `api_targets`  |
-| `headroom/proxy/models.py`            | modified | adds `minimax_api_key`, `minimax_api_url`, `minimax_session_token` |
-| `headroom/proxy/server.py`            | modified | adds gateway-vs-direct auth shim in `_retry_request` |
-| `headroom/cli/proxy.py`               | modified | `--backend minimax` + `--minimax-api-{key,url}` flags |
-| `README-MINIMAX.md`                   | **new**  | this file                                           |
-
-Total: 251 lines added, 2 lines modified.
-
----
-
-## One-shot install prompt (paste into Mavis Code / Claude Code / any AI agent)
-
-```text
-Install and run Headroom proxy with MiniMax M3 backend.
-
-1. Verify MiniMax Code is installed and logged in:
-   - Check `~/Library/Application Support/MiniMax Agent/` exists
-   - Confirm a session JWT exists in Local Storage/leveldb/ matching `eyJ[A-Za-z0-9._-]+`
-2. If JWT not in keychain yet, extract and save it:
-     security add-generic-password -s "minimax-session-token" -a "$USER" -w "<JWT>" -U
-3. Install this fork:
-     git clone https://github.com/axelfleureau/headroom.git ~/headroom
-     cd ~/headroom && pip install -e .
-4. Patch the installed Headroom package with this fork's _retry_request shim
-   (the upstream package at ~/.local/share/uv/tools/headroom-ai/.../site-packages/headroom/proxy/server.py
-   needs the same edit as headroom/proxy/server.py in this fork).
-5. Write ~/Library/LaunchAgents/com.headroom.minimax.plist with:
-     - ProgramArguments: /Users/axel/.headroom/deploy/default/run-headroom.sh
-     - EnvironmentVariables: ANTHROPIC_TARGET_API_URL=https://agent.minimax.io/mavis/api/v1/llm/v1
-6. Write /Users/axel/.headroom/deploy/default/run-headroom.sh as in this repo.
-7. launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.headroom.minimax.plist
-8. Verify with: curl -s -X POST http://127.0.0.1:8787/v1/messages \
-     -H "x-api-key: dummy" -H "anthropic-version: 2023-06-01" \
-     -d '{"model":"MiniMax-M3","max_tokens":20,"messages":[{"role":"user","content":"say HELLO"}]}'
-   Expect: response containing "HELLO" and `model: "MiniMax-M3"`.
-9. Report: ✅ if M3 responds, ❌ with the error if not.
-```
+**Totale patch al package headroom-ai**: ZERO. La patch precedente è stata
+rimossa perché Mavis Code già gestisce l'auth lato client.
 
 ---
 
 ## License
 
-Same as upstream: Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0, same as upstream.
