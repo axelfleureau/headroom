@@ -96,13 +96,21 @@ class MiniMaxHandlerMixin:
         - Strips the ``minimax/`` prefix from the model name before
           forwarding upstream, since the MiniMax gateway expects
           bare model names (``MiniMax-M3``, not ``minimax/MiniMax-M3``).
-        - Resolves ``upstream_base_url`` to the MiniMax target via
-          ``provider_runtime.api_target("minimax")`` if not provided.
-        """
-        # Build a target shim that uses the minimax api_target by default
-        if upstream_base_url is None:
-            upstream_base_url = self.provider_runtime.api_target("minimax")
 
+        Note on upstream URL resolution:
+            We do NOT pass a default ``upstream_base_url`` here. The
+            delegate falls back to ``self.ANTHROPIC_API_URL``, which is
+            set at proxy construction time from the
+            ``ANTHROPIC_TARGET_API_URL`` env var (or the operator's CLI
+            flag). This keeps a single source of truth for upstream
+            routing — operators pin the Mavis Code gateway URL once,
+            in the LaunchAgent plist, and both Anthropic and MiniMax
+            traffic flow through it. The fork-specific
+            ``MINIMAX_TARGET_API_URL`` env var is intentionally NOT
+            consulted here: it would override the Mavis Code gateway
+            with the direct ``api.minimaxi.com/anthropic`` upstream,
+            which doesn't accept ``Token: <jwt>`` headers.
+        """
         # Strip the prefix from the incoming model name so the upstream
         # gateway recognises it. Use a fresh request body if needed.
         if model_override is None:
@@ -133,10 +141,11 @@ class MiniMaxHandlerMixin:
 
         # Delegate. We pass model_override so the Anthropic handler
         # sees the cleaned model name even if the body-patch failed.
+        # upstream_base_url is NOT passed: delegate falls back to
+        # self.ANTHROPIC_API_URL (set from ANTHROPIC_TARGET_API_URL env var).
         return await AnthropicHandlerMixin.handle_anthropic_messages(
             self,
             request,
-            upstream_base_url=upstream_base_url,
             provider_name=provider_name,  # "minimax" — overrides default
             model_override=model_override,
             force_stream=force_stream,
