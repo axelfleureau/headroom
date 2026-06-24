@@ -3088,6 +3088,13 @@ class AnthropicHandlerMixin:
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
+        # Read body first so the model-name override check below has the
+        # data it needs (was UnboundLocalError before body was read).
+        body_bytes = await request.body()
+        try:
+            body = json.loads(body_bytes) if body_bytes else None
+        except (json.JSONDecodeError, ValueError):
+            body = None
         client = classify_client(headers, default="claude")
         # If the request body identifies a non-Anthropic model
         # (e.g. MiniMax-M3, codex/*), the harness is the provider's
@@ -3112,7 +3119,7 @@ class AnthropicHandlerMixin:
             request_id=None,
         )
 
-        body = await request.body()
+        body = body_bytes
 
         response = await self.http_client.request(  # type: ignore[union-attr]
             method=request.method,
@@ -3223,6 +3230,14 @@ class AnthropicHandlerMixin:
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
+        # Read body first so the model-name override check below has the
+        # data it needs (avoids UnboundLocalError on GET requests where
+        # body would otherwise be unbound).
+        body_bytes = await request.body()
+        try:
+            body = json.loads(body_bytes) if body_bytes else None
+        except (json.JSONDecodeError, ValueError):
+            body = None
         client = classify_client(headers, default="claude")
         # If the request body identifies a non-Anthropic model
         # (e.g. MiniMax-M3, codex/*), the harness is the provider's
